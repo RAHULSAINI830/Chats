@@ -1,227 +1,197 @@
-const express = require('express');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
-const multer = require('multer');
-const { v4: uuidv4 } = require('uuid'); // For generating unique IDs
-const mongoose = require('mongoose');
-const socketIO = require('socket.io');
-const cors = require('cors');
+// server.js
+'use strict';
 
-const app = express();
+const express    = require('express');
+const http       = require('http');
+const path       = require('path');
+const fs         = require('fs');
+const multer     = require('multer');
+const { v4: uuidv4 } = require('uuid');
+const mongoose   = require('mongoose');
+const socketIO   = require('socket.io');
+const cors       = require('cors');
+
+const app    = express();
 const server = http.createServer(app);
-const io = socketIO(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
+const io     = socketIO(server, {
+  cors: { origin: '*', methods: ['GET','POST'] }
 });
 
-// ---------------------------
-// Middleware
-// ---------------------------
+// Allow specifying your deployed URL in env (e.g. https://my-app.onrender.com)
+const HOST_URL = process.env.HOST_URL || `http://localhost:${process.env.PORT||5002}`;
+
+// ─── Middleware ────────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(cors());
 
-// ---------------------------
-// Connect to MongoDB
-// ---------------------------
+// ─── MongoDB Connection ────────────────────────────────────────────────────────
 mongoose.connect(
-  'mongodb+srv://admarketing:Marketing%40123@cluster0.u9gvd6c.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
-  { useNewUrlParser: true, useUnifiedTopology: true }
+  'mongodb+srv://admarketing:Marketing%40123@cluster0.u9gvd6c.mongodb.net/?retryWrites=true&w=majority',
+  { useNewUrlParser: true, useUnifiedTopology: true, tls: true }
 );
+
 const db = mongoose.connection;
-db.on('error', console.error.bind(console, 'connection error:'));
+db.on('error', console.error.bind(console,'MongoDB connection error:'));
 db.once('open', () => console.log('MongoDB connected'));
 
-// ---------------------------
-// Mongoose Schema and Model for Chat Sessions
-// ---------------------------
+// ─── Mongoose Schemas & Models ────────────────────────────────────────────────
 const chatSessionSchema = new mongoose.Schema({
   sessionId: { type: String, required: true, unique: true },
   createdAt: { type: Date, default: Date.now }
 });
 const ChatSession = mongoose.model('ChatSession', chatSessionSchema);
 
-// ---------------------------
-// Mongoose Schema and Model for Chat Messages
-// ---------------------------
 const messageSchema = new mongoose.Schema({
   sessionId: { type: String, required: true },
-  sender: { type: String, required: true },
-  text: { type: String, default: '' },
-  fileUrl: { type: String, default: '' },
-  fileType: { type: String, default: '' },
+  sender:    { type: String, required: true },
+  text:      { type: String, default: '' },
+  fileUrl:   { type: String, default: '' },
+  fileType:  { type: String, default: '' },
   createdAt: { type: Date, default: Date.now }
 });
 const Message = mongoose.model('Message', messageSchema);
 
-// ---------------------------
-// Mongoose Schema and Model for Users
-// ---------------------------
 const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true },
+  name:        { type: String, required: true },
+  email:       { type: String, required: true },
   companyName: { type: String, required: true },
-  link: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now }
+  link:        { type: String, required: true },
+  createdAt:   { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
 
-// ---------------------------
-// File Upload Setup with Multer
-// ---------------------------
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir);
-}
+// ─── File Upload Setup ─────────────────────────────────────────────────────────
+const uploadDir = path.join(__dirname,'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
+  destination: (req,file,cb) => cb(null,'uploads/'),
+  filename:    (req,file,cb) => {
+    const unique = Date.now() + '-' + Math.round(Math.random()*1e9);
+    cb(null, unique + '-' + file.originalname);
   }
 });
+
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 }, // Limit file size to 100 KB.
-  fileFilter: (req, file, cb) => {
-    // Accept only images and audio files.
-    if (
-      file.mimetype.startsWith('image/') ||
-      file.mimetype.startsWith('audio/')
-    ) {
-      cb(null, true);
+  limits: { fileSize: 100*1024 },
+  fileFilter: (req,file,cb) => {
+    if (file.mimetype.startsWith('image/') ||
+        file.mimetype.startsWith('audio/')) {
+      cb(null,true);
     } else {
-      cb(new Error('Only images and audio files are allowed.'));
+      cb(new Error('Only images and audio are allowed.'));
     }
   }
 });
 
-// Endpoint for file uploads.
-app.post('/api/upload', upload.single('file'), (req, res) => {
+// ─── API: Upload ────────────────────────────────────────────────────────────────
+app.post('/api/upload', upload.single('file'), (req,res) => {
   if (!req.file) {
-    return res.status(400).json({ error: 'No file provided or file too large.' });
+    return res.status(400).json({ error: 'No file or too large.' });
   }
-  // Return a URL that the frontend can use to load the file.
-  const fileUrl = `http://localhost:5002/uploads/${req.file.filename}`;
+  const fileUrl = `${HOST_URL}/uploads/${req.file.filename}`;
   res.json({ fileUrl });
 });
-
-// Serve static files from the uploads directory.
 app.use('/uploads', express.static('uploads'));
 
-// ---------------------------
-// Chat Session API Endpoints
-// ---------------------------
-
-// Create a new chat session and save it in the database.
-app.post('/api/create-chat', async (req, res) => {
+// ─── API: Chat Sessions & Messages ─────────────────────────────────────────────
+app.post('/api/create-chat', async (req,res) => {
   try {
     const sessionId = uuidv4();
-    const newSession = new ChatSession({ sessionId });
-    await newSession.save();
+    await new ChatSession({ sessionId }).save();
     res.json({ sessionId });
-  } catch (error) {
-    console.error('Error creating chat session:', error);
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Could not create chat session' });
   }
 });
 
-// GET endpoint to fetch all chat sessions.
-app.get('/api/chat-sessions', async (req, res) => {
+app.get('/api/chat-sessions', async (req,res) => {
   try {
-    const sessions = await ChatSession.find().sort({ createdAt: -1 });
+    const sessions = await ChatSession.find().sort({ createdAt:-1 });
     res.json(sessions);
-  } catch (error) {
-    console.error('Error fetching chat sessions:', error);
-    res.status(500).json({ error: 'Could not fetch chat sessions' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error:'Could not fetch chat sessions' });
   }
 });
 
-// GET endpoint to fetch messages for a given chat session.
-app.get('/api/messages/:sessionId', async (req, res) => {
+app.get('/api/messages/:sessionId', async (req,res) => {
   try {
     const { sessionId } = req.params;
-    const messages = await Message.find({ sessionId }).sort({ createdAt: 1 });
-    res.json(messages);
-  } catch (error) {
-    console.error('Error fetching messages:', error);
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    const msgs = await Message.find({ sessionId }).sort({ createdAt:1 });
+    res.json(msgs);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error:'Failed to fetch messages' });
   }
 });
 
-// ---------------------------
-// User API Endpoints
-// ---------------------------
-
-// Create a new user.
-app.post('/api/create-user', async (req, res) => {
+// ─── API: Users ────────────────────────────────────────────────────────────────
+app.post('/api/create-user', async (req,res) => {
   try {
-    const { name, email, companyName } = req.body;
-    // Generate a unique link for the user (adjust as needed).
-    const link = `http://localhost:3000/chat/${uuidv4()}`;
-    const newUser = new User({ name, email, companyName, link });
-    await newUser.save();
-    res.json(newUser);
-  } catch (error) {
-    console.error('Error creating user:', error);
-    res.status(500).json({ error: 'Could not create user' });
+    const { name,email,companyName } = req.body;
+    const link = `${HOST_URL}/chat/${uuidv4()}`;
+    const user = await new User({ name,email,companyName,link }).save();
+    res.json(user);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error:'Could not create user' });
   }
 });
 
-// GET endpoint to fetch all users.
-app.get('/api/users', async (req, res) => {
+app.get('/api/users', async (req,res) => {
   try {
-    const users = await User.find().sort({ createdAt: -1 });
+    const users = await User.find().sort({ createdAt:-1 });
     res.json(users);
-  } catch (error) {
-    console.error('Error fetching users:', error);
-    res.status(500).json({ error: 'Could not fetch users' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error:'Could not fetch users' });
   }
 });
 
-// ---------------------------
-// Socket.IO Configuration for Real-Time Chat
-// ---------------------------
-io.on('connection', (socket) => {
-  console.log('New client connected');
-  
-  socket.on('joinSession', (sessionId) => {
-    socket.join(sessionId);
-    console.log(`Client joined session: ${sessionId}`);
-  });
-  
-  socket.on('chatMessage', async ({ sessionId, sender, text, fileUrl, fileType }) => {
-    const messageData = { sessionId, sender, text, fileUrl, fileType };
-    // Save the message to MongoDB.
-    const newMessage = new Message(messageData);
-    try {
-      await newMessage.save();
-    } catch (error) {
-      console.error('Error saving message:', error);
-    }
-    // Emit the message to all clients in the session.
-    io.to(sessionId).emit('chatMessage', messageData);
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('Client disconnected');
-  });
-});
-// in your server.js (or routes file)
-app.delete('/api/users/:id', async (req, res) => {
+app.delete('/api/users/:id', async (req,res) => {
   try {
     await User.findByIdAndDelete(req.params.id);
     res.sendStatus(204);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to delete user' });
+    res.status(500).json({ error:'Failed to delete user' });
   }
 });
 
+// ─── Socket.IO Real‑time Chat ─────────────────────────────────────────────────
+io.on('connection', socket => {
+  console.log('New client connected');
 
-// ---------------------------
-// Start the Server
-// ---------------------------
+  socket.on('joinSession', sessionId => {
+    socket.join(sessionId);
+  });
+
+  socket.on('chatMessage', async data => {
+    const msg = new Message({ ...data, createdAt: data.createdAt||Date.now() });
+    await msg.save().catch(console.error);
+    io.to(data.sessionId).emit('chatMessage', data);
+  });
+
+  socket.on('disconnect', () => console.log('Client disconnected'));
+});
+
+// ─── Serve React Frontend ───────────────────────────────────────────────────────
+// Points to /realtime-chat-frontend/build
+app.use(
+  express.static(
+    path.join(__dirname,'realtime-chat-frontend','build')
+  )
+);
+
+app.get('*', (req,res) => {
+  res.sendFile(
+    path.join(__dirname,'realtime-chat-frontend','build','index.html')
+  );
+});
+
+// ─── Start the Server ───────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5002;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
