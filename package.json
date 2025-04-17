@@ -4,11 +4,8 @@
   "description": "Express & Socket.IO backend for realtime chat with file uploads",
   "main": "server.js",
   "scripts": {
-    // 1. Build frontend, then install backend deps
     "build": "cd realtime-chat-frontend && npm install && npm run build && cd .. && npm install",
-    // 2. Start your server (used by Render)
     "start": "node server.js",
-    // 3. Dev helper locally
     "dev": "nodemon server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
